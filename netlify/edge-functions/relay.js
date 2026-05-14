@@ -1,28 +1,44 @@
-const TARGET = "https://snapp.edrivensports.com:8443";
+const TARGET      = "https://snapp.edrivensports.com:8443";
+const NO_BODY     = new Set(["GET", "HEAD"]);
+const HOP_BY_HOP  = new Set([
+  "host","connection","keep-alive","transfer-encoding",
+  "te","trailer","upgrade","proxy-authenticate","proxy-authorization",
+]);
 
-export default async (request, context) => {
-  const url = new URL(request.url);
-  const targetUrl = TARGET + url.pathname + url.search;
-
-  const headers = new Headers(request.headers);
-  headers.set("Host", "snapp.edrivensports.com");
-
+export default async function relay(request) {
   try {
-    const response = await fetch(targetUrl, {
-      method: request.method,
-      headers: headers,
-      body: request.method !== "GET" && request.method !== "HEAD"
-              ? request.body
-              : undefined,
-      duplex: "half",
+    const { pathname, search } = new URL(request.url);
+    const targetUrl = TARGET + pathname + search;
+
+    const outHeaders = new Headers();
+    for (const [k, v] of request.headers) {
+      if (!HOP_BY_HOP.has(k.toLowerCase())) outHeaders.set(k, v);
+    }
+    outHeaders.set("host", "snapp.edrivensports.com");
+
+    // KEY FIX: buffer body instead of streaming — prevents Deno dropping XHTTP payloads
+    const body = !NO_BODY.has(request.method) && request.body
+      ? await request.arrayBuffer()
+      : null;
+
+    const upstream = await fetch(targetUrl, {
+      method:   request.method,
+      headers:  outHeaders,
+      redirect: "manual",
+      body,
     });
 
-    return new Response(response.body, {
-      status: response.status,
-      headers: response.headers,
+    const resHeaders = new Headers();
+    for (const [k, v] of upstream.headers) {
+      if (k.toLowerCase() !== "transfer-encoding") resHeaders.set(k, v);
+    }
+
+    return new Response(upstream.body, {
+      status:  upstream.status,
+      headers: resHeaders,
     });
 
   } catch (err) {
     return new Response("relay error: " + err.message, { status: 502 });
   }
-};
+}
